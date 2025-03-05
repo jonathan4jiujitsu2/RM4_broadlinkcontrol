@@ -1,0 +1,92 @@
+import time
+import broadlink
+from mcculw import ul
+from mcculw.device_info import DaqDeviceInfo
+from mcculw.enums import TempScale
+
+DEVICE_NAME = "VERGA1"  
+
+# IR Codes
+ir_codes = {
+    'Power On': b'&\x00P\x00\x00\x01 \x8f\x10\x13\x10\x13\x10\x13\x104\x104\x11\x12\x11\x12\x113\x104\x105\x104\x103\x11\x12\x114\x113\x10\x13\x104\x10\x13\x10\x13\x104\x113\x11\x12\x11\x12\x11\x12\x10\x13\x104\x105\x0f\x14\x0f\x13\x104\x113\x114\x0f\x00\x04Y\x00\x01 E\x0f\x00\r\x05',
+    'Power Off': b'&\x00P\x00\x00\x01 \x8e\x11\x12\x11\x12\x11\x12\x114\x0f5\x10\x13\x10\x13\x103\x114\x104\x104\x105\x10\x13\x0f4\x113\x11\x12\x114\x0f\x14\x0f\x14\x0f5\x103\x11\x12\x11\x12\x11\x12\x11\x12\x114\x0f5\x10\x13\x10\x13\x103\x114\x104\x10\x00\x04Y\x00\x01\x1fD\x11\x00\r\x05'
+}
+
+# Temperature Setpoints
+TEMP_HIGH = 70  # Turn AC ON if above this
+TEMP_LOW = 60   # Turn AC OFF if below this
+CHECK_INTERVAL = 10  # Seconds between checks
+
+# 🔍 Discover Broadlink RM4 Mini by name
+print("Searching for Broadlink devices...")
+devices = broadlink.discover(timeout=5)
+device = None
+
+for dev in devices:
+    if hasattr(dev, "name") and dev.name == DEVICE_NAME:
+        device = dev
+        break
+
+if not device:
+    print(f"❌ ERROR: Device '{DEVICE_NAME}' not found!")
+    exit(1)
+
+device.auth()
+print(f"✅ Connected to {DEVICE_NAME}")
+
+# Function to read temperature from a specific channel
+def read_temperature(board_num, channel):
+    try:
+        temp = ul.t_in(board_num, channel, TempScale.FAHRENHEIT)
+        return round(temp, 2)
+    except Exception as e:
+        return f"Error reading from board {board_num}, channel {channel}: {e}"
+
+# Detect connected USB-TC devices
+print("\n=== Detecting USB-TC Devices ===")
+usb_tc_boards = []
+
+for board_num in range(6):  # Check up to 6 boards
+    try:
+        daq_dev_info = DaqDeviceInfo(board_num)
+        if "USB-TC" in daq_dev_info.product_name:
+            usb_tc_boards.append(board_num)
+            print(f"Board #{board_num}: {daq_dev_info.product_name} (ID: {daq_dev_info.unique_id})")
+    except Exception:
+        pass  # Ignore errors for non-existent boards
+
+# Function to send IR commands
+def send_ir(command):
+    if command in ir_codes:
+        device.send_data(ir_codes[command])
+        print(f"📡 Sent IR Command: {command}")
+    else:
+        print(f"❌ Invalid Command: {command}")
+
+# Main control loop
+print("\n=== Starting Temperature-Based HVAC Control ===")
+ac_status = "OFF"
+
+while True:
+    for board_num in usb_tc_boards:
+        for channel in range(8):  # Assume 8 channels per board
+            temp = read_temperature(board_num, channel)
+
+            if isinstance(temp, str) and "Error" in temp:
+                print(f"Board {board_num}, Channel {channel}: {temp}")
+                continue  # Skip errors
+
+            print(f"🌡 Board {board_num}, Channel {channel}: {temp} °F")
+
+            # HVAC Logic
+            if temp > TEMP_HIGH and ac_status == "OFF":
+                print("🚀 Temperature too high! Turning AC ON...")
+                send_ir('Power On')
+                ac_status = "ON"
+
+            elif temp < TEMP_LOW and ac_status == "ON":
+                print("❄️ Temperature too low! Turning AC OFF...")
+                send_ir('Power Off')
+                ac_status = "OFF"
+
+    time.sleep(CHECK_INTERVAL)  # Wait before checking again
